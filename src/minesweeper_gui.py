@@ -255,22 +255,36 @@ class MinesweeperGUI:
         # Chạy solver để tìm thêm ô an toàn và mìn
         mines_found = []
         # Các sự kiện solver có thể yield:
-        # - cell (tuple 2 số): ô chắc chắn an toàn.
+        # - ("safe", cell): ô chắc chắn an toàn.
         # - ("mine", cell): ô chắc chắn mìn.
         # - ("unknown", cell): chưa đủ bằng chứng.
+        # - ("guess", cell): ô đoán.
+        # - ("prop_done", None): propagation kết thúc (HillClimbing).
         # Chỉ thêm vào result_cells những ô chắc chắn an toàn.
         for result in snapshot.start_ai(algorithm):
             if isinstance(result, tuple) and len(result) == 2:
-                if result[0] == "mine":
-                    mines_found.append(result[1])
-                elif result[0] == "unknown":
+                tag, val = result
+                if tag == "mine":
+                    mines_found.append(val)
+                elif tag == "unknown":
                     # Bỏ qua - không đủ bằng chứng
                     continue
+                elif tag == "prop_done":
+                    # Propagation kết thúc (HillClimbing), bỏ qua
+                    continue
+                elif tag == "guess":
+                    # Ô đoán - vẫn thêm vào danh sách mở
+                    if val not in result_cells:
+                        result_cells.append(val)
+                elif tag == "safe":
+                    # Ô an toàn từ propagation/DFS
+                    if val not in result_cells:
+                        result_cells.append(val)
                 else:
-                    cell = result[1] if isinstance(result[1], tuple) else result
-                    if cell not in result_cells:
-                        result_cells.append(cell)
+                    # Các tag không xử lý được, bỏ qua
+                    continue
             else:
+                # Bare cell (legacy fallback)
                 cell = result
                 if cell not in result_cells:
                     result_cells.append(cell)

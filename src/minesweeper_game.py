@@ -206,6 +206,11 @@ class GameEngine:
             self.game_over = True
             self.won = True
             return None
+        # Cascade reveal: nếu số = 0, mở tất cả ô xung quanh
+        if self._numbers.get(cell, -1) == 0:
+            for neighbor in self._neighbors(cell):
+                if neighbor not in self.revealed and neighbor not in self.mine_positions:
+                    self.reveal(neighbor)
         return False
 
     def toggle_flag(self, cell: Cell):
@@ -867,138 +872,6 @@ class AISolver:
                 yield (UNKNOWN, cell)
 
         self.stats.elapsed_time = time.perf_counter() - start
-        """Hàm chính. Yield ``("safe", cell)``, ``("mine", cell)``,
-        ``("unknown", cell)``.
-
-        Luồng xử lý:
-            1. Chụp quan sát.
-            2. Xây dựng ràng buộc.
-            3. Constraint propagation: kết luận safe/mine tức thì.
-            4. Với mỗi ô chưa biết còn lại, dùng ``dfs_prove`` để
-               kiểm tra chứng minh safe/mine. Nếu hết ô cần xét mà
-               vẫn còn unknown, yield ``("unknown", cell)``.
-            5. Không tự ý "đoán" một ô là safe.
-        """
-        start = time.perf_counter()
-        self.stats = SolverStats()
-        self._events = []
-
-        obs = self.get_observation(engine)
-        self._emit("observe", {"revealed": len(obs.revealed),
-                               "flags": len(obs.flags)})
-
-        constraints = self.build_constraints(obs)
-        self._emit("constraint_built", {"count": len(constraints)})
-
-        # Tập các ô chưa biết (chưa gán)
-        unknown_cells: List[Cell] = []
-        for cell in obs.all_cells:
-            if cell in obs.revealed or cell in obs.flags:
-                continue
-            unknown_cells.append(cell)
-
-        # Ràng buộc tổng luôn ở cuối - lấy ra để tính mines_target
-        # trong tập unknown_cells.
-        if not constraints:
-            self.stats.elapsed_time = time.perf_counter() - start
-            return
-
-        total_constraint = constraints[-1]
-        mines_target = total_constraint.target
-
-        # Propagation
-        known_safe: Set[Cell] = set()
-        known_mines: Set[Cell] = set()
-        ks, km, _, status = self.propagate(known_safe, known_mines, constraints)
-        if status == "contradiction":
-            # Quan sát mâu thuẫn - yield unknown cho tất cả
-            for cell in unknown_cells:
-                yield (UNKNOWN, cell)
-            self.stats.elapsed_time = time.perf_counter() - start
-            return
-        known_safe = ks
-        known_mines = km
-
-        # Cập nhật tập unknown sau propagation
-        unknown_cells = [c for c in unknown_cells
-                         if c not in known_safe and c not in known_mines]
-        # Cập nhật target: mìn còn lại trong unknown_cells = total - len(cờ & known_mines)
-        already_mines = len(known_mines)
-        remaining_target = mines_target - already_mines
-        if remaining_target < 0:
-            # Mâu thuẫn
-            for cell in unknown_cells:
-                yield (UNKNOWN, cell)
-            self.stats.elapsed_time = time.perf_counter() - start
-            return
-
-        # Yield kết quả propagation trước (trước khi return sớm)
-        for cell in sorted(known_safe):
-            yield (SAFE, cell)
-        for cell in sorted(known_mines):
-            yield (MINE, cell)
-
-        # Trường hợp đặc biệt: hết ô / hết mìn
-        if not unknown_cells:
-            self.stats.elapsed_time = time.perf_counter() - start
-            return
-        if remaining_target == 0:
-            # Đã yield known_safe ở trên; không còn unknown_cells nào
-            # khác cần yield. Trả về.
-            self.stats.elapsed_time = time.perf_counter() - start
-            return
-        if remaining_target == len(unknown_cells):
-            # Tất cả các ô chưa xác định còn lại đều là mìn
-            for cell in unknown_cells:
-                yield (MINE, cell)
-            self.stats.elapsed_time = time.perf_counter() - start
-            return
-
-        # Cập nhật constraints: loại bỏ biến đã biết khỏi tất cả ràng
-        # buộc địa phương, đồng thời trừ target tương ứng với mìn đã
-        # biết (cờ + suy luận); ràng buộc tổng đã được tính ở trên.
-        reduced = []
-        for c in constraints[:-1]:
-            # Trừ các ô đã biết (safe hoặc mine) khỏi biến
-            vars_ = set(c.variables) - known_safe - known_mines
-            # Trừ số mìn đã biết (trong tập variables gốc) khỏi target
-            target = c.target - len(known_mines & set(c.variables))
-            if not vars_:
-                # Tất cả biến đã gán - kiểm tra nhất quán
-                if target != 0:
-                    # Mâu thuẫn cục bộ
-                    continue
-                continue
-            reduced.append(Constraint(variables=frozenset(vars_), target=target))
-        # Ràng buộc tổng đã đúng (chỉ chứa unknown_cells)
-        reduced.append(Constraint(
-            variables=frozenset(unknown_cells),
-            target=remaining_target,
-        ))
-
-        # DFS cho từng ô chưa biết
-        proven = set()
-        for cell in unknown_cells:
-            # Nếu đã được prove từ vòng trước thì bỏ qua
-            if cell in proven:
-                continue
-            # Bỏ qua nếu đã vượt giới hạn
-            if self.stats.search_truncated:
-                yield (UNKNOWN, cell)
-                continue
-
-            self._emit("dfs_start", {"target": cell})
-            result = self.dfs_prove(cell, unknown_cells, reduced, remaining_target)
-            if result == SAFE:
-                yield (SAFE, cell)
-                proven.add(cell)
-            elif result == MINE:
-                yield (MINE, cell)
-                proven.add(cell)
-            else:
-                yield (UNKNOWN, cell)
-
-        self.stats.elapsed_time = time.perf_counter() - start
 
     # --------------------------------------------------------
     # API tiện cho GUI / benchmark (tương thích với code cũ)
@@ -1132,7 +1005,7 @@ class MinesweeperGame:
                     if cell not in self.ai_path:
                         self.ai_path.append(cell)
                     safe_cells.append(cell)
-                    yield cell
+                    yield ("safe", cell)  # Tuple format for consistency
                 elif kind == MINE:
                     mines_found.append(cell)
                     yield ("mine", cell)
@@ -1152,88 +1025,51 @@ class MinesweeperGame:
             return safe_cells, mines_found
 
         elif algorithm == "HillClimbing":
+            # HillClimbing chỉ trả về 1 guess duy nhất - GUI sẽ gọi lại sau mỗi ô
+            from hill_climbing import (
+                HillClimbingSolver,
+                SAFE as _HC_SAFE, MINE as _HC_MINE, GUESS as _HC_GUESS,
+                PROP_DONE as _HC_PROP_DONE,
+            )
             safe_cells = []
             mines_found = []
-            for item in self._solve_hillclimbing():
-                if isinstance(item, tuple) and item[0] == "mine":
-                    mines_found.append(item[1])
+
+            hc = HillClimbingSolver(self.engine)
+            found_first_guess = False
+            for tag, cell in hc.solve():
+                if tag == _HC_SAFE:
+                    if cell not in self.ai_path:
+                        self.ai_path.append(cell)
+                    safe_cells.append(cell)
+                    yield ("safe", cell)
+                elif tag == _HC_MINE:
+                    mines_found.append(cell)
+                    yield ("mine", cell)
+                elif tag == _HC_GUESS:
+                    # Chỉ yield guess ĐẦU TIÊN - GUI sẽ gọi lại sau khi ô được mở
+                    if not found_first_guess:
+                        if cell not in self.ai_path:
+                            self.ai_path.append(cell)
+                        safe_cells.append(cell)
+                        yield ("guess", cell)
+                        found_first_guess = True
+                        break  # Dừng lại, chờ user mở ô
                 else:
-                    safe_cells.append(item)
-                yield item
+                    yield (tag, cell)
+
+            self.stats.update({
+                "expanded_nodes": hc.stats.expanded_nodes,
+                "generated_nodes": hc.stats.generated_nodes,
+                "backtracks": 0,
+                "valid_configurations": 0,
+                "search_truncated": False,
+                "propagation_steps": hc.stats.propagation_steps,
+                "guesses": hc.stats.guesses,
+                "elapsed_time": hc.stats.elapsed_time,
+            })
             return safe_cells, mines_found
         else:
             return [], []
-
-    def _solve_hillclimbing(self) -> Iterable:
-        """Phiên bản Hill Climbing đơn giản, vẫn không truy cập
-        mine_positions. Chỉ dùng constraint propagation.
-
-        Theo yêu cầu đề bài, việc đoán ngẫu nhiên phải tách riêng
-        khỏi suy luận chắc chắn. Hàm này chỉ chạy propagation;
-        việc chọn nước đi khi không đủ thông tin do caller quyết
-        định (không tự ý đoán).
-
-        Yield:
-            - ``cell`` cho ô chắc chắn an toàn (từ propagation).
-            - ``("mine", cell)`` cho cờ mìn suy ra được.
-        """
-        from config import MINES as _MINES
-        obs = self.solver.get_observation(self.engine)
-        known_safe: Set[Cell] = set()
-        known_mines: Set[Cell] = set()
-        expanded = 0
-
-        # Chạy propagation đến điểm cố định. Không tự ý đoán.
-        for _ in range(50):
-            constraints = self.solver.build_constraints(obs)
-            ks, km, _, _ = self.solver.propagate(known_safe, known_mines, constraints)
-            new_safe = ks - known_safe
-            new_mines = km - known_mines
-            known_safe, known_mines = ks, km
-            for cell in new_safe:
-                if cell not in self.engine.revealed and cell not in self.engine.flags:
-                    expanded += 1
-                    self.ai_path.append(cell)
-                    yield cell
-            for cell in new_mines:
-                if cell not in self.engine.flags:
-                    self.engine.flags.add(cell)
-                    yield ("mine", cell)
-            if not new_safe and not new_mines:
-                break
-
-        self.stats.update({"expanded_nodes": expanded,
-                           "generated_nodes": 0})
-
-    def _hill_score(self, obs: GameObservation, cell: Cell) -> float:
-        from config import MINES as _MINES
-        related = []
-        for nb in obs.neighbors(cell):
-            num = obs.numbers.get(nb)
-            if num is None:
-                continue
-            hidden = [n for n in obs.neighbors(nb)
-                      if n not in obs.revealed and n not in obs.flags]
-            flags = sum(1 for n in obs.neighbors(nb) if n in obs.flags)
-            target = max(0, min(num - flags, len(hidden)))
-            related.append((hidden, target))
-        for hidden, target in related:
-            if cell in hidden:
-                if target == 0:
-                    return 1.0
-                if target == len(hidden):
-                    return -1.0
-        if not related:
-            hidden = [c for c in obs.all_cells
-                      if c not in obs.revealed and c not in obs.flags]
-            if not hidden:
-                return 0.01
-            prob = 1.0 - _MINES / max(1, len(hidden))
-            return max(0.01, prob)
-        # Trung bình 1 - target/len
-        scores = [1.0 - target / max(1, len(hidden))
-                  for hidden, target in related]
-        return max(0.01, min(0.99, sum(scores) / len(scores)))
 
     def next_step(self) -> Optional[Cell]:
         if self.ai_index >= len(self.ai_path):
