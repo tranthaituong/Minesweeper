@@ -1,165 +1,130 @@
-# Minesweeper — Giao diện và thực nghiệm
+# Minesweeper — Game Engine & AI Solver
 
-Ứng dụng Python 3 sử dụng Pygame để hiển thị bàn cờ, điều khiển DFS/A* và chạy
-thực nghiệm. Frontend kết nối với backend qua lớp `MinesweeperGame`.
+Dự án Python 3 với Pygame, cài đặt ba thuật toán giải Minesweeper và giao diện trực quan để thao tác từng bước, so sánh hiệu năng.
 
-## 1. Phân công
+---
 
-| Người phụ trách | Công việc |
-| --- | --- |
-| Người 1 — Backend | Luật chơi, mô hình bài toán, DFS, A*, heuristic, bộ input và thống kê tìm kiếm |
-| Người 2 — Frontend và thực nghiệm | Giao diện Pygame, điều khiển, kiểm thử, chạy benchmark, lập bảng và phân tích kết quả |
-| Cả hai | Thống nhất dữ liệu trao đổi, ghép chương trình và chuẩn bị demo |
+## Cấu trúc
 
-## 2. Cấu trúc và cách ghép
+```
+.
+├── main.py                    # Điểm khởi chạy Pygame
+├── config.py                  # Cấu hình bàn cờ (ROWS, COLS, MINES, CELL_SIZE)
+├── requirements.txt           # pygame==2.6.1
+│
+├── src/
+│   ├── minesweeper_game.py    # GameEngine + AISolver (DFS/A*) + GameObservation
+│   ├── minesweeper_gui.py     # Giao diện Pygame
+│   ├── hill_climbing.py       # HillClimbingSolver — tách biệt hoàn toàn
+│   └── rendering.py            # Hỗ trợ HiDPI / Retina
+│
+├── tests/
+│   ├── test_ai_solver.py      # 10 test case cho DFS (CSP model)
+│   ├── test_hill_climbing.py  # 8 test case cho Hill Climbing
+│   └── test_frontend.py        # 19 test case cho giao diện
+│
+├── experiments.py             # Tạo bàn deterministic + đo hiệu năng
+├── benchmark.py               # Chạy benchmark, xuất CSV
+└── README.md
+```
 
-Đặt các file sau vào cùng thư mục dự án:
+---
 
-| File | Chức năng | Cách ghép |
-| --- | --- | --- |
-| `main.py` | Khởi chạy Pygame | Thay file khởi chạy Tkinter cũ |
-| `minesweeper_gui.py` | Bàn cờ và các nút điều khiển | Thay giao diện cũ |
-| `rendering.py` | Hiển thị Retina/HiDPI và biểu tượng ứng dụng | Thêm vào dự án |
-| `experiments.py` | Tạo bàn theo seed và đo hiệu năng | Thêm vào dự án |
-| `benchmark.py` | Chạy nhiều input và xuất bảng CSV | Thêm vào dự án |
-| `requirements.txt` | Thư viện Pygame | Ghép với danh sách thư viện của nhóm |
-| `tests/test_frontend.py` | Kiểm tra giao diện và công cụ đo | Đặt trong thư mục `tests/` |
-
-Sử dụng `config.py` và `minesweeper_game.py` do Người 1 quản lý. Gói frontend
-gồm các file trong bảng trên; ghép chúng với hai file backend để chạy chương trình.
-
-## 3. Cài đặt và chạy
-
-Sử dụng Python 3.10 trở lên. Mở Terminal trong thư mục dự án và chạy:
+## Cài đặt
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+# Tạo môi trường ảo
+python -m venv .venv
+.venv\Scripts\activate      # Windows
+# source .venv/bin/activate  # macOS / Linux
+
+# Cài thư viện
 python -m pip install -r requirements.txt
+
+# Chạy giao diện
 python main.py
 ```
 
-Trên Windows, tạo môi trường bằng `python -m venv .venv` và kích hoạt bằng
-`.venv\Scripts\activate`.
+---
 
-Các lần chạy tiếp theo, kích hoạt môi trường rồi nhập `python main.py`.
+## Các thuật toán
 
-## 4. Sử dụng giao diện
+### DFS + Backtracking (CSP)
+Mô hình hóa bàn cờ thành bài toán ràng buộc (CSP):
+
+1. **Constraint propagation** — sinh ô chắc chắn `safe` / `mine` mà không cần duyệt.
+2. **DFS nhị phân** — thử gán 0/1 cho từng ô, kiểm tra ràng buộc từng phần, backtrack khi vi phạm.
+3. Chỉ kết luận an toàn/không an toàn khi thật sự có bằng chứng từ *mọi* cấu hình hợp lệ.
+
+### Hill Climbing
+Hoạt động tách biệt hoàn toàn với `GameEngine`, chỉ dùng `GameObservation`:
+
+- **Giai đoạn A**: Constraint propagation giống DFS.
+- **Giai đoạn B**: Khi không còn tiến bộ, dùng heuristic để chọn ô tốt nhất theo mức độ thỏa mãn ràng buộc cục bộ.
+- Yield theo contract: `("safe", cell)` / `("mine", cell)` / `("guess", cell)` / `("prop_done", None)`.
+
+---
+
+## Giao diện
 
 | Thao tác | Chức năng |
-| --- | --- |
+|---|---|
 | Chuột trái | Mở ô |
-| Chuột phải hoặc Control + chuột trái | Cắm/gỡ cờ |
-| DFS / A* | Chọn thuật toán |
-| Step hoặc phím mũi tên phải | Thực hiện một bước AI |
-| Play/Pause hoặc phím Space | Chạy/tạm dừng AI |
-| Nút tốc độ | Chuyển giữa 0.5×, 1× và 2.5× |
-| Reset bàn cũ hoặc phím R | Giữ vị trí mìn, đặt lại các ô, cờ, kế hoạch và đồng hồ |
-| Bàn mới hoặc phím N | Tạo bàn theo seed tiếp theo |
-| Nút ‹ | Quay về seed trước |
-| Chạy benchmark | Đo 10 input, mỗi thuật toán chạy 3 lần |
+| Chuột phải / Ctrl + trái | Cắm / gỡ cờ |
+| DFS / HillClimbing | Chọn thuật toán |
+| Step / → | Thực hiện một bước AI |
+| Play / Pause · Space | Chạy hoặc tạm dừng |
+| Nút tốc độ | 0.5× / 1× / 2.5× |
+| Reset bàn cũ · R | Giữ vị trí mìn, đặt lại trạng thái |
+| Bàn mới · N | Tạo bàn mới theo seed tiếp theo |
+| ‹ / › | Quay lại / đi tới seed khác |
+| Chạy benchmark | 10 bàn × 3 lần × mỗi thuật toán |
 
-AI tạm dừng khi gặp ô đang cắm cờ. Gỡ cờ rồi bấm Step hoặc Play để tiếp tục.
-Khi mở ô bằng tay, chương trình lập lại kế hoạch AI ở lần chạy tiếp theo.
-Tọa độ trên giao diện bắt đầu từ 1; tọa độ trong backend bắt đầu từ 0.
+---
 
-Để xem hai thuật toán trên cùng bàn: chạy DFS, bấm Reset bàn cũ, chọn A* và chạy lại.
-
-Giao diện hiển thị số mìn, cờ đã cắm, ô an toàn đã mở, trạng thái AI, tiến độ và
-các bước gần nhất. Đồng hồ trên cùng tính thời gian chơi; mục “Lập kế hoạch”
-hiển thị thời gian tính toán của backend.
-
-## 5. Cấu hình và hiển thị
-
-Chỉnh `ROWS`, `COLS`, `MINES` trong `config.py`, sau đó khởi động lại chương trình.
-Cùng cấu hình và seed sẽ tạo lại cùng một bàn cờ.
-
-Giao diện vẽ theo số pixel thực của cửa sổ. Màn hình Retina 2× hiển thị nhãn
-`RETINA 2×` ở góc trên bên phải. Biểu tượng ứng dụng sử dụng ảnh M 512 × 512 pixel.
-
-## 6. Kết nối backend
-
-Giao diện sử dụng các thành phần sau của `MinesweeperGame`:
-
-| Thành phần | Dữ liệu trao đổi |
-| --- | --- |
-| `reveal(cell, source)` | Thực hiện thao tác mở ô |
-| `start_ai(algorithm)` | Lập kế hoạch cho DFS hoặc A* |
-| `next_step()` | Lấy ô tiếp theo trong kế hoạch |
-| `numbers`, `revealed`, `flags`, `mine_positions` | Dữ liệu bàn cờ để quản lý và hiển thị |
-| `ai_path`, `ai_index` | Kế hoạch và bước hiện tại |
-| `game_over`, `won` | Trạng thái kết thúc và chiến thắng |
-
-Các đầu việc tích hợp tiếp theo:
-
-| Đầu việc | Phụ trách |
-| --- | --- |
-| Xác định thông tin AI được phép biết, state, action, goal test và chi phí | Người 1 thiết kế; cả hai thống nhất |
-| Với mô hình bàn mìn ẩn, cho solver nhận các ô đã mở và con số; bộ game giữ đáp án để kiểm tra thao tác | Người 1 |
-| Điều chỉnh `start_ai()`, hiện đang lấy `safe_cells` trực tiếp từ `mine_positions`, theo mô hình đã chọn | Người 1 |
-| Sửa luồng `astar_safe_order()` → `astar_path()`: hiện `start` thuộc tập đích nên hàm trả `[start]` ngay | Người 1 |
-| Đồng bộ cách sinh nước đi, chi phí và heuristic của A*; kiểm tra khoảng cách Manhattan khi dùng 8 hướng chi phí 1 | Người 1 |
-| Xuất kết quả, hành động và `expanded_nodes` từ backend | Người 1 |
-| Kết nối kết quả và thống kê mới vào giao diện, bộ đo và `validate_plan()` | Người 2 |
-| Chuẩn bị input theo các mức độ khó | Người 1 |
-| Chạy bộ input, lập bảng và viết phần phân tích | Người 2 |
-
-Khi solver ra quyết định sau từng lần mở ô, frontend gọi quyết định tiếp theo
-sau khi cập nhật bàn cờ. Hai người thống nhất cách trả kết quả trước khi ghép
-luồng xử lý này.
-
-## 7. Chạy benchmark và đọc kết quả
-
-Đóng cửa sổ game, rồi chạy trong Terminal:
+## Chạy benchmark
 
 ```bash
 python benchmark.py --seeds 10 --repeats 3
 ```
 
-Chọn dải seed và thư mục kết quả bằng lệnh:
-
-```bash
-python benchmark.py --start-seed 20 --seeds 10 --repeats 3 --output ket_qua
-```
-
-Kết quả mặc định được lưu trong `benchmark_results/` cạnh chương trình:
+Kết quả lưu trong `benchmark_results/`:
 
 | File | Nội dung |
-| --- | --- |
+|---|---|
 | `raw.csv` | Số liệu từng lượt chạy |
-| `by_input.csv` | Trung vị của từng thuật toán trên từng input |
-| `summary.csv` | Bảng tổng hợp theo thuật toán |
-| `metadata.json` | Cấu hình và cách đo |
-| `run.log` | Nhật ký khi chạy benchmark từ giao diện |
+| `by_input.csv` | Trung vị theo từng seed |
+| `summary.csv` | Tổng hợp theo thuật toán |
+| `metadata.json` | Cấu hình benchmark |
+| `run.log` | Nhật ký chạy từ giao diện |
 
-Các chỉ số:
+Các chỉ số đo: `planning_ms`, `python_peak_kib`, `expanded_nodes`, `generated_nodes`, `safe_cells_found`.
 
-- `planning_ms`: thời gian gọi `start_ai()`, đo bằng `time.perf_counter()`.
-- `python_peak_kib`: đỉnh bộ nhớ cấp phát Python, đo bằng `tracemalloc` ở lượt riêng.
-- `planned_cells`: số ô trong kế hoạch mở.
-- `expanded_nodes`: số trạng thái mở rộng do backend cung cấp; cột hiện để trống.
-- `valid_plan`: kết quả kiểm tra danh sách ô mà backend trả về.
+---
 
-Bộ đo hiện gọi chức năng lập thứ tự mở ô của backend. Các seed thay đổi bố trí
-mìn trên cùng cấu hình. Khi ghép bộ giải mới, Người 2 cập nhật phạm vi đo và
-nhận thống kê tìm kiếm từ backend.
-
-Quy trình thực nghiệm: chọn bộ input theo mức độ khó, chạy DFS và A* từ cùng
-trạng thái ban đầu, lặp lại, tổng hợp trung vị theo input, rồi phân tích thời
-gian, bộ nhớ và số trạng thái mở rộng. Báo cáo ghi rõ kết quả của từng thuật toán
-trên từng nhóm input và giải thích nguyên nhân từ cách tìm kiếm, heuristic.
-
-## 8. Kiểm thử
+## Kiểm thử
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Bộ kiểm thử gồm 19 trường hợp: Step, Play/Pause, Reset, cắm cờ, đổi bàn, mở ô
-bằng tay, kết nối kế hoạch AI, thay đổi kích thước cửa sổ, Retina và xuất CSV.
+| Bộ test | Test case | Phạm vi |
+|---|---|---|
+| `test_ai_solver.py` | 10 | DFS — CSP, mâu thuẫn, giới hạn, isolation |
+| `test_hill_climbing.py` | 8 | Propagation, guess, trạng thái thắng/thua |
+| `test_frontend.py` | 19 | Step, Play/Pause, Reset, cắm cờ, benchmark, resize, Retina |
 
-## 9. Nội dung báo cáo
+---
 
-- Người 1: mô hình bài toán, DFS, A*, heuristic và cách tạo input.
-- Người 2: giao diện, kiểm thử, phương pháp đo, bảng số liệu và phân tích.
-- Cả hai: hướng dẫn chạy, kịch bản demo và slides phần Minesweeper.
+## Cấu hình bàn cờ
+
+Chỉnh trong `config.py`:
+
+```python
+ROWS = 10
+COLS = 10
+MINES = 10
+CELL_SIZE = 50
+```
+
+Cùng cấu hình + seed sẽ tạo lại bàn cờ y hệt.
