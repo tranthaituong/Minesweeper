@@ -3,11 +3,11 @@
 # ============================================================
 
 # Kích thước bàn cờ
-ROWS = 10
-COLS = 10
+ROWS = 5
+COLS = 5
 
 # Số lượng mìn
-MINES = 10
+MINES = 4
 
 # Kích thước ô (pixel)
 CELL_SIZE = 50
