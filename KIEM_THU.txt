@@ -1,0 +1,20 @@
+test_benchmark_button_targets_root_script (test_person2.FrontendTests.test_benchmark_button_targets_root_script) ... ok
+test_guess_action_keeps_guess_label (test_person2.FrontendTests.test_guess_action_keeps_guess_label) ... ok
+test_highdpi_flag_and_large_icon (test_person2.FrontendTests.test_highdpi_flag_and_large_icon) ... ok
+test_manual_flag_invalidates_old_plan (test_person2.FrontendTests.test_manual_flag_invalidates_old_plan) ... ok
+test_mine_action_is_visible_as_its_own_step (test_person2.FrontendTests.test_mine_action_is_visible_as_its_own_step) ... ok
+test_new_input_wraps_and_restores_its_clues (test_person2.FrontendTests.test_new_input_wraps_and_restores_its_clues) ... ok
+test_pause_during_planning_does_not_execute_action (test_person2.FrontendTests.test_pause_during_planning_does_not_execute_action) ... ok
+test_reset_cancels_running_plan (test_person2.FrontendTests.test_reset_cancels_running_plan) ... ok
+test_reset_restores_exact_initial_observation (test_person2.FrontendTests.test_reset_restores_exact_initial_observation) ... ok
+test_resize_keeps_board_coordinates_and_retina_pixels (test_person2.FrontendTests.test_resize_keeps_board_coordinates_and_retina_pixels) ... ok
+test_step_performs_one_action_even_when_reveal_cascades (test_person2.FrontendTests.test_step_performs_one_action_even_when_reveal_cascades) ... ok
+test_all_inputs_have_consistent_clues_and_sound_deductions (test_person2.MeasurementTests.test_all_inputs_have_consistent_clues_and_sound_deductions) ... ok
+test_guess_is_separate_from_deductions (test_person2.MeasurementTests.test_guess_is_separate_from_deductions) ... ok
+test_reads_final_statistics_after_generator_completion (test_person2.MeasurementTests.test_reads_final_statistics_after_generator_completion) ... ok
+test_solver_view_has_only_visible_numbers (test_person2.MeasurementTests.test_solver_view_has_only_visible_numbers) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 1.839s
+
+OK

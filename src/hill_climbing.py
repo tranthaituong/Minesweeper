@@ -395,9 +395,11 @@ class HillClimbingSolver:
             sim_km: Set[Cell] = set()
             for _ in range(self.MAX_PROP_ITERS):
                 ks2, km2, ch, st = propagate(sim_ks, sim_km, sim_constraints)
-                if st == "contradiction" or not ch:
+                if st == "contradiction":
                     break
                 sim_ks, sim_km = ks2, km2
+                if not ch:
+                    break
 
             new_score = evaluate_state(obs, sim_ks, sim_km, sim_constraints)
             self.stats.expanded_nodes += 1
@@ -439,9 +441,14 @@ class HillClimbingSolver:
         sim_km: Set[Cell] = set()
         for _ in range(self.MAX_PROP_ITERS):
             ks2, km2, ch, st = propagate(sim_ks, sim_km, sim_constraints)
-            if st == "contradiction" or not ch:
+            if st == "contradiction":
                 break
             sim_ks, sim_km = ks2, km2
+            if not ch:
+                break
+
+        if best_score <= baseline_score:
+            return None
 
         return best_cell, best_score, sim_ks, sim_km, sim_constraints
 
@@ -502,6 +509,8 @@ class HillClimbingSolver:
                 break
 
             best_cell, new_score, new_safe, new_mines, new_constraints = result
+            if new_score <= current_score:
+                break
 
             guesses_made += 1
             self.stats.guesses += 1

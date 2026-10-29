@@ -1,195 +1,224 @@
-"""Reproducible inputs and measurements for AI solver evaluation."""
+"""Fixed inputs, a public-observation adapter, and one-round measurements.
 
+The two upstream solver files in src/ are consumed without modification.
+"""
 import gc
-import os
-import random
+import itertools
+import json
+import multiprocessing as mp
+from pathlib import Path
 import statistics
 import sys
 import time
 import tracemalloc
 
-# Make sure src/ is on the path regardless of cwd
-_THIS = os.path.dirname(os.path.abspath(__file__))
-_SRC = os.path.join(_THIS, "src")
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
-
+ROOT = Path(__file__).resolve().parent
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
 from config import ROWS, COLS, MINES
 from minesweeper_game import MinesweeperGame
-# Ensure HillClimbingSolver is registered so start_ai("HillClimbing") works
-from hill_climbing import HillClimbingSolver  # noqa: F401
+from hill_climbing import HillClimbingSolver  # Preload both algorithms before timing.
+
+ALGORITHMS = ("DFS", "HillClimbing")
 
 
-def make_game(seed):
-    """
-    Tạo bàn cờ có thể lặp lại (deterministic).
-    Giữ nguyên global random state.
-    """
-    if ROWS <= 0 or COLS <= 0 or not 0 <= MINES < ROWS * COLS:
-        raise ValueError("Cần ROWS, COLS > 0 và 0 <= MINES < ROWS * COLS.")
-
-    saved = random.getstate()
-    try:
-        random.seed(seed)
-        game = MinesweeperGame()
-        game.new_game()
-        return game
-    finally:
-        random.setstate(saved)
+def load_cases():
+    data = json.loads((ROOT / "inputs.json").read_text(encoding="utf-8"))
+    if (data["rows"], data["cols"], data["mines"]) != (ROWS, COLS, MINES):
+        raise ValueError("Cấu hình đã đổi. Chạy python prepare_inputs.py để tạo lại bộ input.")
+    return data["cases"]
 
 
-def validate_result(game, cells, allow_guesses=False):
-    """
-    Kiểm tra kết quả AI:
-    - Tất cả ô được trả về phải thực sự an toàn
-    - Không có ô an toàn nào bị bỏ sót trong phạm vi suy luận
-
-    ``allow_guesses=False`` (mặc định): tất cả cell phải là safe.
-    ``allow_guesses=True``: cho phép guess có thể sai (hill climbing).
-    """
-    if not cells:
-        return True
-
-    for cell in cells:
-        if cell in game.engine.mine_positions:
-            return False
-
-    return True
+def make_game(seed=0):
+    """Initial clues belong to the input; they are not AI moves."""
+    cases = load_cases()
+    case = cases[seed % len(cases)]
+    game = MinesweeperGame()
+    engine = game.engine
+    engine.mine_positions = {tuple(c) for c in case["mine_positions"]}
+    engine.revealed = {tuple(c) for c in case["initial_revealed"]}
+    engine.flags = {tuple(c) for c in case["initial_flags"]}
+    engine._numbers = {
+        (r, c): sum(n in engine.mine_positions for n in engine._neighbors((r, c)))
+        for r in range(ROWS) for c in range(COLS)
+    }
+    return game
 
 
-def measure_once(seed, algorithm):
-    """
-    Đo lường một lần chạy thuật toán.
-
-    Trả về:
-    - seed, rows, cols, mines
-    - algorithm
-    - planning_ms: thời gian lập kế hoạch (ms)
-    - expanded_nodes: số trạng thái đã mở rộng
-    - generated_nodes: số trạng thái đã sinh
-    - safe_cells_found: số ô an toàn tìm được (chỉ từ propagation, không tính guess)
-    - guesses_made: số nước đoán (Hill Climbing)
-    - steps_taken: số ô đã mở thực sự
-    - valid_result: kết quả có hợp lệ không
-    - status: trạng thái cuối cùng
-    """
-    game = make_game(seed)
-
-    # Chạy solver và đo thời gian
-    gc.collect()
-    start = time.perf_counter()
-
-    safe_cells = []
-    expanded = 0
-    generated = 0
-    guesses_made = 0
-    propagated_safe = 0
-
-    for result in game.start_ai(algorithm):
-        # start_ai yield:
-        #   - ("safe", cell): ô an toàn (từ propagation hoặc DFS).
-        #   - ("mine", cell): cờ mìn.
-        #   - ("guess", cell): nước đoán (Hill Climbing).
-        #   - ("unknown", cell): không đủ bằng chứng (DFS).
-        #   - ("prop_done", None): propagation kết thúc.
-        if isinstance(result, tuple) and len(result) == 2:
-            tag, val = result
-            if tag == "mine":
-                continue
-            elif tag == "guess":
-                guesses_made += 1
-                safe_cells.append(val)
-            elif tag == "unknown":
-                continue
-            elif tag == "prop_done":
-                continue
-            elif tag == "safe":
-                safe_cells.append(val)
-                propagated_safe += 1
-            else:
-                # tag is not a recognized string, val might be cell
-                if isinstance(val, tuple):
-                    safe_cells.append(val)
-        else:
-            # Bare cell tuple (legacy fallback)
-            safe_cells.append(result)
-            propagated_safe += 1
-
-        expanded = game.stats.get("expanded_nodes", 0)
-        generated = game.stats.get("generated_nodes", 0)
-
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    valid = validate_result(game, safe_cells)
-
-    # Đo bộ nhớ (tách riêng để không ảnh hưởng timing)
-    memory_game = make_game(seed)
-    gc.collect()
-    tracemalloc.start()
-    try:
-        for _ in memory_game.start_ai(algorithm):
-            pass
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-
+def public_observation(game):
     return {
-        "seed": seed,
-        "rows": ROWS,
-        "cols": COLS,
-        "mines": MINES,
-        "algorithm": algorithm,
-        "planning_ms": elapsed_ms,
-        "python_peak_kib": peak / 1024,
-        "expanded_nodes": expanded,
-        "generated_nodes": generated,
-        "safe_cells_found": len(safe_cells),
-        "guesses_made": guesses_made,
-        "propagated_safe": propagated_safe,
-        "valid_result": valid,
-        "status": "valid" if valid else "invalid",
-        "backend_mode": "ai_reasoning",
+        "rows": ROWS, "cols": COLS, "mines": MINES,
+        "numbers": [[r, c, game.engine.get_number((r, c))]
+                    for r, c in sorted(game.revealed)
+                    if game.engine.get_number((r, c)) is not None],
+        "flags": [list(c) for c in sorted(game.flags)],
     }
 
 
-def run_trials(seeds, repeats=3):
-    """Chạy nhiều lần thí nghiệm."""
+class ObservationEngine:
+    """Solver view containing only visible clues and flags."""
+    def __init__(self, observation):
+        self._rows = observation["rows"]
+        self._cols = observation["cols"]
+        self._mines_count = observation["mines"]
+        self.total_mines = observation["mines"]
+        self._visible = {(r, c): n for r, c, n in observation["numbers"]}
+        self.revealed = set(self._visible)
+        self.flags = {tuple(c) for c in observation["flags"]}
+        self.game_over = False
+        self.won = False
+
+    def get_number(self, cell):
+        return self._visible.get(cell) if cell in self.revealed else None
+
+    @property
+    def mine_positions(self):
+        raise RuntimeError("Solver đã yêu cầu vị trí mìn ẩn.")
+
+
+def compute_plan(observation, algorithm):
+    if algorithm not in ALGORITHMS:
+        raise ValueError(f"Thuật toán không hợp lệ: {algorithm}")
+    game = MinesweeperGame()
+    game.engine = ObservationEngine(observation)
+    started = time.perf_counter()
+    actions, unknown, seen = [], [], set()
+    for tag, cell in game.start_ai(algorithm):
+        if cell is not None:
+            cell = tuple(cell)
+        if tag in ("safe", "mine", "guess") and (tag, cell) not in seen:
+            seen.add((tag, cell))
+            actions.append((tag, cell))
+        elif tag == "unknown":
+            unknown.append(cell)
+    # Facade statistics are finalized after exhausting its generator.
+    elapsed = (time.perf_counter() - started) * 1000
+    return {"actions": actions, "unknown": unknown, "planning_ms": elapsed,
+            "stats": dict(game.stats)}
+
+
+def plan_worker(connection, observation, algorithm):
+    try:
+        connection.send({"ok": True, "plan": compute_plan(observation, algorithm)})
+    except Exception as exc:
+        connection.send({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        connection.close()
+
+
+def forced_cells(observation):
+    """Reference enumeration runs outside the measured solver calls."""
+    engine = ObservationEngine(observation)
+    all_cells = {(r, c) for r in range(engine._rows) for c in range(engine._cols)}
+    hidden = sorted(all_cells - engine.revealed - engine.flags)
+    target = engine.total_mines - len(engine.flags)
+    always_mine, sometimes_mine = set(hidden), set()
+    configurations = 0
+    for combination in itertools.combinations(hidden, target):
+        mines = set(combination) | engine.flags
+        valid = True
+        for (r, c), number in engine._visible.items():
+            adjacent = sum((r+dr, c+dc) in mines for dr in (-1, 0, 1)
+                           for dc in (-1, 0, 1) if (dr, dc) != (0, 0))
+            if adjacent != number:
+                valid = False
+                break
+        if valid:
+            configurations += 1
+            always_mine.intersection_update(mines)
+            sometimes_mine.update(mines)
+    if not configurations:
+        raise ValueError("Các số và cờ của input mâu thuẫn.")
+    return set(hidden) - sometimes_mine, always_mine, configurations
+
+
+def _measure_local(case_index, algorithm):
+    game = make_game(case_index)
+    observation = public_observation(game)
+    gc.collect()
+    plan = compute_plan(observation, algorithm)
+    gc.collect()
+    tracemalloc.start()
+    try:
+        memory_plan = compute_plan(observation, algorithm)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    if plan["actions"] != memory_plan["actions"]:
+        raise RuntimeError("Hai lượt đo cùng input trả về các hành động khác nhau.")
+    safe = {tuple(c) for tag, c in plan["actions"] if tag == "safe"}
+    mines = {tuple(c) for tag, c in plan["actions"] if tag == "mine"}
+    guesses = {tuple(c) for tag, c in plan["actions"] if tag == "guess"}
+    expected_safe, expected_mines, models = forced_cells(observation)
+    correct = safe <= expected_safe and mines <= expected_mines
+    cases = load_cases()
+    case = cases[case_index % len(cases)]
+    return {
+        "case_id": case["id"], "seed": case["seed"], "hidden_cells": case["hidden_cells"],
+        "algorithm": algorithm, "status": "ok" if correct else "deduction_error",
+        "planning_ms": plan["planning_ms"], "python_peak_kib": peak / 1024,
+        "expanded_nodes": plan["stats"].get("expanded_nodes", 0),
+        "generated_nodes": plan["stats"].get("generated_nodes", 0),
+        "safe_deductions": len(safe), "mine_deductions": len(mines),
+        "guesses": len(guesses), "guess_hits_mine": len(guesses & game.mine_positions),
+        "forced_safe_total": len(expected_safe), "forced_mine_total": len(expected_mines),
+        "missed_forced_safe": len(expected_safe - safe),
+        "missed_forced_mines": len(expected_mines - mines),
+        "consistent_layouts": models, "deductions_correct": correct,
+        "search_truncated": plan["stats"].get("search_truncated", False),
+    }
+
+
+def _trial_worker(connection, case_index, algorithm):
+    try:
+        connection.send({"ok": True, "row": _measure_local(case_index, algorithm)})
+    except Exception as exc:
+        connection.send({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        connection.close()
+
+
+def measure_once(seed, algorithm, timeout=10):
+    context = mp.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_trial_worker, args=(sender, seed, algorithm))
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(timeout):
+            raise TimeoutError(f"{algorithm}: vượt {timeout:g} giây cho một lượt đo.")
+        result = receiver.recv()
+        if not result["ok"]:
+            raise RuntimeError(result["error"])
+        return result["row"]
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=2)
+        receiver.close()
+
+
+def run_trials(seeds, repeats=3, timeout=10, progress=None):
     if repeats < 1:
         raise ValueError("repeats phải >= 1")
-
     rows = []
     for seed in seeds:
-        for algorithm in ("DFS", "HillClimbing"):
-            for repeat in range(repeats):
-                row = measure_once(seed, algorithm)
-                row["repeat"] = repeat + 1
+        for algorithm in ALGORITHMS:
+            for repeat in range(1, repeats + 1):
+                row = measure_once(seed, algorithm, timeout)
+                row["repeat"] = repeat
                 rows.append(row)
-
+                if progress:
+                    progress(row)
     return rows
 
 
 def summarize(rows):
-    """Tổng hợp kết quả theo thuật toán."""
-    summaries = []
-
-    for algorithm in ("DFS", "HillClimbing"):
-        samples = [row for row in rows if row["algorithm"] == algorithm]
-        if samples:
-            valid_count = sum(1 for row in samples if row["valid_result"])
-            expanded_list = [row["expanded_nodes"] for row in samples if row["expanded_nodes"]]
-            generated_list = [row["generated_nodes"] for row in samples if row["generated_nodes"]]
-            guesses_list = [row.get("guesses_made", 0) for row in samples if row["algorithm"] == "HillClimbing"]
-
-            summaries.append({
-                "algorithm": algorithm,
-                "runs": len(samples),
-                "valid_results": valid_count,
-                "median_planning_ms": statistics.median(row["planning_ms"] for row in samples),
-                "median_python_peak_kib": statistics.median(row["python_peak_kib"] for row in samples),
-                "median_expanded_nodes": statistics.median(expanded_list) if expanded_list else None,
-                "median_generated_nodes": statistics.median(generated_list) if generated_list else None,
-                "total_safe_cells": sum(row["safe_cells_found"] for row in samples),
-                "total_guesses": sum(row.get("guesses_made", 0) for row in samples),
-                "valid_runs": valid_count,
-            })
-
-    return summaries
+    return [{
+        "algorithm": algorithm, "runs": len(samples),
+        "median_planning_ms": statistics.median(r["planning_ms"] for r in samples),
+        "median_python_peak_kib": statistics.median(r["python_peak_kib"] for r in samples),
+        "correct_deduction_runs": sum(r["deductions_correct"] for r in samples),
+        "runs_with_guess": sum(r["guesses"] > 0 for r in samples),
+    } for algorithm in ALGORITHMS
+       if (samples := [r for r in rows if r["algorithm"] == algorithm])]

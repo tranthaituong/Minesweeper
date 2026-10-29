@@ -809,8 +809,9 @@ class AISolver:
             self.stats.elapsed_time = time.perf_counter() - start
             return
         if remaining_target == 0:
-            # Đã yield known_safe ở trên; không còn unknown_cells nào
-            # khác cần yield. Trả về.
+            # Không còn mìn cần gán: mọi ô chưa xác định đều an toàn.
+            for cell in unknown_cells:
+                yield (SAFE, cell)
             self.stats.elapsed_time = time.perf_counter() - start
             return
         if remaining_target == len(unknown_cells):

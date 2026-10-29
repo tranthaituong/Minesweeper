@@ -1,19 +1,18 @@
-"""Pygame frontend for Person 2. The supplied game/search backend is unchanged."""
+"""Pygame frontend: fixed puzzles, tagged AI actions, and fair experiments."""
 
-import copy
+import multiprocessing as mp
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 os.environ.setdefault("SDL_VIDEO_HIGHDPI_DISABLED", "0")
 import pygame
 
 from config import ROWS, COLS, MINES
-from experiments import make_game
+from experiments import ROOT, load_cases, make_game, public_observation, plan_worker
 from rendering import NativeDisplay
 
 
@@ -53,20 +52,24 @@ class MinesweeperGUI:
         self.plan_ms = None
         self.last_cell = None
         self.history = []
-        self.notice = "Chọn thuật toán, bấm Step hoặc Play để bắt đầu."
-        self.seed = seed
-        self.game = make_game(seed)
+        self.notice = "Các số mở sẵn là dữ kiện của input. Chọn DFS hoặc Hill Climbing, rồi bấm Step."
+        self.case_count = len(load_cases())
+        self.seed = seed % self.case_count
+        self.game = make_game(self.seed)
+        self.plan_actions = []
         self.started_at = None
         self.finished_seconds = None
         self.generation = 0
-        self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ai-plan")
+        self.context = mp.get_context("spawn")
+        self.plan_pipe = None
+        self.plan_started = None
         self.pending = None
         self.pending_generation = None
         self.pending_action = None
         self.benchmark_process = None
         self.benchmark_log = None
-        self.benchmark_notice = "10 bàn cố định · 3 lần / thuật toán"
-        self.benchmark_dir = Path(__file__).resolve().parent / "benchmark_results"
+        self.benchmark_notice = "9 input cố định · 3 lần / thuật toán"
+        self.benchmark_dir = ROOT / "benchmark_results"
         self.benchmark_started = False
 
     def font(self, size=16, bold=False):
@@ -197,29 +200,35 @@ class MinesweeperGUI:
     def _invalidate_plan(self):
         self.generation += 1
         if self.pending is not None:
-            self.pending.cancel()
+            if self.pending.is_alive():
+                self.pending.terminate()
+            self.pending.join(timeout=1)
+        if self.plan_pipe is not None:
+            self.plan_pipe.close()
         self.pending = None
+        self.plan_pipe = None
         self.pending_action = None
         self.game.ai_path = []
         self.game.ai_index = 0
+        self.plan_actions = []
         self.plan_ms = None
+        self.game.stats = {}
         self.playing = False
 
     def reset_board(self):
-        """Replay the SAME input; new_board is the separate input-changing action."""
+        """Restore the exact initial clues as well as the mine layout."""
         self._invalidate_plan()
-        self.game.reset()
+        self.game = make_game(self.seed)
         self.last_cell = None
         self.history.clear()
         self.started_at = None
         self.finished_seconds = None
-        self.notice = "Đã đặt lại đúng bàn cũ. Có thể chọn thuật toán khác để so sánh."
+        self.notice = "Đã khôi phục dữ kiện ban đầu. Chọn thuật toán để chạy lại cùng input."
 
     def new_board(self, seed=None):
+        self.seed = (self.seed + 1 if seed is None else seed) % self.case_count
         self.reset_board()
-        self.seed = self.seed + 1 if seed is None else max(0, seed)
-        self.game = make_game(self.seed)
-        self.notice = f"Bàn #{self.seed:04d} sẵn sàng. Chuột trái mở ô, chuột phải cắm cờ."
+        self.notice = f"Input T{self.seed+1:02d}: các số mở sẵn là dữ kiện cho cả hai thuật toán."
 
     def choose_algorithm(self, algorithm):
         if algorithm == self.algorithm:
@@ -228,78 +237,18 @@ class MinesweeperGUI:
         self.algorithm = algorithm
         self.notice = f"Đã chọn {algorithm}. Reset để so sánh từ cùng trạng thái ban đầu."
 
-    @staticmethod
-    def _compute_plan(snapshot, algorithm):
-        """
-        Lập kế hoạch cho AI.
-        Nếu chưa có ô nào được mở, mở một ô an toàn trước.
-        """
-        start = time.perf_counter()
-        result_cells = []
-        stats = {"expanded_nodes": 0, "generated_nodes": 0}
-        
-        # Nếu chưa mở ô nào, mở ô an toàn đầu tiên
-        if not snapshot.engine.revealed:
-            # Thử ngẫu nhiên cho đến khi có ô an toàn
-            all_cells = [(r, c) for r in range(ROWS) for c in range(COLS)]
-            import random
-            random.shuffle(all_cells)
-            
-            for cell in all_cells:
-                if cell not in snapshot.engine.mine_positions:
-                    # Mở ô này
-                    snapshot.engine.reveal(cell)
-                    result_cells.append(cell)
-                    break
-        
-        # Chạy solver để tìm thêm ô an toàn và mìn
-        mines_found = []
-        # Các sự kiện solver có thể yield:
-        # - ("safe", cell): ô chắc chắn an toàn.
-        # - ("mine", cell): ô chắc chắn mìn.
-        # - ("unknown", cell): chưa đủ bằng chứng.
-        # - ("guess", cell): ô đoán.
-        # - ("prop_done", None): propagation kết thúc (HillClimbing).
-        # Chỉ thêm vào result_cells những ô chắc chắn an toàn.
-        for result in snapshot.start_ai(algorithm):
-            if isinstance(result, tuple) and len(result) == 2:
-                tag, val = result
-                if tag == "mine":
-                    mines_found.append(val)
-                elif tag == "unknown":
-                    # Bỏ qua - không đủ bằng chứng
-                    continue
-                elif tag == "prop_done":
-                    # Propagation kết thúc (HillClimbing), bỏ qua
-                    continue
-                elif tag == "guess":
-                    # Ô đoán - vẫn thêm vào danh sách mở
-                    if val not in result_cells:
-                        result_cells.append(val)
-                elif tag == "safe":
-                    # Ô an toàn từ propagation/DFS
-                    if val not in result_cells:
-                        result_cells.append(val)
-                else:
-                    # Các tag không xử lý được, bỏ qua
-                    continue
-            else:
-                # Bare cell (legacy fallback)
-                cell = result
-                if cell not in result_cells:
-                    result_cells.append(cell)
-            stats = snapshot.stats.copy()
-        
-        elapsed = (time.perf_counter() - start) * 1000
-        return result_cells, mines_found, elapsed, stats
-
     def _request_plan(self, action):
         if self.pending is not None or self.game.game_over:
             return
         self.pending_action = action
         self.pending_generation = self.generation
-        self.pending = self.worker.submit(self._compute_plan, copy.deepcopy(self.game), self.algorithm)
-        self.notice = f"Đang chuẩn bị kế hoạch {self.algorithm}…"
+        self.plan_pipe, sender = self.context.Pipe(duplex=False)
+        self.pending = self.context.Process(target=plan_worker,
+            args=(sender, public_observation(self.game), self.algorithm))
+        self.pending.start()
+        sender.close()
+        self.plan_started = time.monotonic()
+        self.notice = f"Đang suy luận bằng {self.algorithm}…"
 
     def step(self):
         if self.game.game_over or self.pending is not None:
@@ -311,34 +260,47 @@ class MinesweeperGUI:
             self._advance()
 
     def toggle_play(self):
-        if self.game.game_over or self.pending is not None:
+        if self.game.game_over:
             return
-        if self.playing:
+        if self.pending is not None:
+            self.pending_action = "pause" if self.pending_action == "play" else "play"
+            self.notice = "Đã tạm dừng." if self.pending_action == "pause" else "Sẽ chạy khi lập kế hoạch xong."
+        elif self.playing:
             self.playing = False
-            self.notice = "Đã tạm dừng. Bấm Step để xem từng ô hoặc Play để tiếp tục."
+            self.notice = "Đã tạm dừng. Bấm Step để xem từng hành động hoặc Play để tiếp tục."
         elif self.plan_remaining:
             self.playing = True
-            self.next_tick = pygame.time.get_ticks()
+            self.next_tick = pygame.time.get_ticks() + self.intervals[self.speed_index]
         else:
             self._request_plan("play")
 
     def _advance(self):
         while self.plan_remaining:
-            target = self.game.ai_path[self.game.ai_index]
-            if target in self.game.revealed:
-                self.game.next_step()
+            tag, cell = self.plan_actions[self.game.ai_index]
+            if cell in self.game.revealed or (tag == "mine" and cell in self.game.flags):
+                self.game.ai_index += 1
                 continue
-            if target in self.game.flags:
+            if tag != "mine" and cell in self.game.flags:
                 self.playing = False
-                self.notice = f"AI đang chờ ô ({target[0]+1}, {target[1]+1}). Bỏ cờ ở ô này để tiếp tục."
+                self.notice = f"Ô ({cell[0]+1}, {cell[1]+1}) đang có cờ. Bỏ cờ để mở ô này."
                 return
+            if tag == "mine" and len(self.game.flags) >= MINES:
+                self.playing = False
+                self.notice = "Đã hết cờ. Kiểm tra các cờ đang có trên bàn."
+                return
+            self.game.ai_index += 1
             self._start_clock()
-            cell = self.game.next_step()
-            self._reveal(cell, "AI")
+            if tag == "mine":
+                self.game.flags.add(cell)
+                self.last_cell = cell
+                self.history.append((cell, "AI cắm cờ", -1))
+                self.notice = f"AI xác định mìn tại ({cell[0]+1}, {cell[1]+1}) và cắm cờ."
+            else:
+                self._reveal(cell, "AI đoán" if tag == "guess" else "AI suy luận")
             return
         self.playing = False
         if not self.game.game_over:
-            self.notice = "Kế hoạch đã hết. Chưa mở đủ ô an toàn; cần kiểm tra backend."
+            self.notice = "Đã trình bày hết vòng suy luận. Bấm Step hoặc Play để phân tích trạng thái mới."
 
     def _reveal(self, cell, source):
         self.game.reveal(cell, source=source)
@@ -365,7 +327,7 @@ class MinesweeperGUI:
     def toggle_flag(self, cell):
         if self.game.game_over or cell in self.game.revealed:
             return
-        self.playing = False
+        self._invalidate_plan()
         if cell in self.game.flags:
             self.game.flags.remove(cell)
             self.notice = f"Đã bỏ cờ ở ô ({cell[0]+1}, {cell[1]+1})."
@@ -382,52 +344,66 @@ class MinesweeperGUI:
     def start_benchmark(self):
         if self.benchmark_process is not None:
             return
-        self.playing = False
+        self._invalidate_plan()
         self.benchmark_dir.mkdir(parents=True, exist_ok=True)
         self.benchmark_log = (self.benchmark_dir / "run.log").open("w", encoding="utf-8")
-        command = [sys.executable, str(Path(__file__).with_name("benchmark.py")),
-                   "--seeds", "10", "--repeats", "3", "--output", str(self.benchmark_dir)]
+        command = [sys.executable, str(ROOT / "benchmark.py"), "--cases", "9",
+                   "--repeats", "3", "--output", str(self.benchmark_dir)]
         try:
-            self.benchmark_process = subprocess.Popen(command, stdout=self.benchmark_log,
-                                                      stderr=subprocess.STDOUT)
+            self.benchmark_process = subprocess.Popen(command, cwd=ROOT,
+                stdout=self.benchmark_log, stderr=subprocess.STDOUT)
         except OSError as exc:
             self.benchmark_log.close()
             self.benchmark_log = None
             self.notice = f"Không chạy được benchmark: {exc}"
             return
         self.benchmark_started = True
-        self.benchmark_notice = "Đang đo 60 lượt · giao diện vẫn sử dụng được"
+        self.benchmark_notice = "Đang đo 54 lượt · xem tiến độ trong run.log"
 
     def update(self):
-        if self.pending is not None and self.pending.done():
-            future = self.pending
-            generation = self.pending_generation
-            action = self.pending_action
-            self.pending = None
-            self.pending_action = None
-            try:
-                cells, mines_found, elapsed, stats = future.result()
-            except Exception as exc:
-                self.notice = f"Không tạo được kế hoạch: {exc}"
-            else:
+        if self.pending is not None:
+            if self.plan_pipe.poll():
+                process, connection = self.pending, self.plan_pipe
+                action, generation = self.pending_action, self.pending_generation
+                self.pending = self.plan_pipe = None
+                self.pending_action = None
+                try:
+                    result = connection.recv()
+                except EOFError:
+                    result = {"ok": False, "error": "Tiến trình giải đã dừng."}
+                finally:
+                    connection.close()
+                    process.join(timeout=1)
                 if generation == self.generation:
-                    if not cells and not mines_found:
-                        self.notice = f"{self.algorithm}: không tìm được ô an toàn. Thuật toán cần bắt đầu từ ô đã mở."
+                    if not result["ok"]:
+                        self.notice = "Lỗi xử lý thuật toán: " + result["error"]
                     else:
-                        self.game.ai_path = cells
+                        plan = result["plan"]
+                        self.plan_actions = [(tag, tuple(cell)) for tag, cell in plan["actions"]]
+                        self.game.ai_path = [cell for _, cell in self.plan_actions]
                         self.game.ai_index = 0
-                        self.plan_ms = elapsed
-                        self.game.stats.update(stats)
-                        # Cắm cờ các mìn đã tìm được
-                        for mine in mines_found:
-                            if mine not in self.game.flags:
-                                self.game.flags.add(mine)
-                        self.notice = f"{self.algorithm}: tìm được {len(cells)} ô an toàn, {len(mines_found)} mìn. Đang chờ mở ô."
-                        if action == "step":
+                        self.plan_ms = plan["planning_ms"]
+                        self.game.stats = plan["stats"]
+                        safe = sum(tag == "safe" for tag, _ in self.plan_actions)
+                        mines = sum(tag == "mine" for tag, _ in self.plan_actions)
+                        guesses = sum(tag == "guess" for tag, _ in self.plan_actions)
+                        self.notice = f"{self.algorithm}: {safe} ô an toàn · {mines} mìn · {guesses} ô đoán."
+                        if not self.plan_actions:
+                            self.playing = False
+                            self.notice = "Vòng suy luận đã kết thúc, chưa có hành động mới. Reset hoặc chọn input khác."
+                        elif action == "step":
                             self._advance()
                         elif action == "play":
                             self.playing = True
-                            self.next_tick = pygame.time.get_ticks()
+                            self.next_tick = pygame.time.get_ticks() + self.intervals[self.speed_index]
+            elif time.monotonic() - self.plan_started > 10:
+                self._invalidate_plan()
+                self.notice = "Lượt suy luận vượt 10 giây. Chọn input khác hoặc gửi trường hợp này cho bạn làm thuật toán."
+            elif not self.pending.is_alive():
+                # Poll once more next frame: the pipe may still have a final result.
+                if not self.plan_pipe.poll():
+                    self._invalidate_plan()
+                    self.notice = "Tiến trình thuật toán đã dừng. Thử Reset để chạy lại."
         if self.playing and pygame.time.get_ticks() >= self.next_tick:
             self._advance()
             self.next_tick = pygame.time.get_ticks() + self.intervals[self.speed_index]
@@ -437,8 +413,8 @@ class MinesweeperGUI:
                 self.benchmark_process = None
                 self.benchmark_log.close()
                 self.benchmark_log = None
-                self.benchmark_notice = ("Đã lưu raw.csv, summary.csv, metadata.json" if code == 0
-                                         else "Đo thất bại · xem benchmark_results/run.log")
+                self.benchmark_notice = ("Đã lưu CSV và báo cáo thực nghiệm" if code == 0
+                                         else "Xem lỗi trong benchmark_results/run.log")
 
     def board_geometry(self):
         available = pygame.Rect(62, 280, 622, 355)
@@ -526,7 +502,7 @@ class MinesweeperGUI:
         metrics = (("TỔNG SỐ MÌN", f"{MINES:02d}", "Theo cấu hình bàn cờ"),
                    ("CỜ ĐÃ CẮM", f"{len(self.game.flags):02d} / {MINES:02d}", "Chuột phải để đánh dấu"),
                    ("Ô AN TOÀN ĐÃ MỞ", f"{self.safe_opened:02d} / {self.safe_total:02d}", "Mở hết để hoàn thành"),
-                   ("THỜI GIAN CHƠI", f"{int(self.elapsed())//60:02d}:{int(self.elapsed())%60:02d}", "Không phải thời gian thuật toán"))
+                   ("THỜI GIAN DEMO", f"{int(self.elapsed())//60:02d}:{int(self.elapsed())%60:02d}", "Thời gian thao tác trên bàn"))
         for index, (label, value, caption) in enumerate(metrics):
             x = 28 + index*280
             self.card((x, 101, 264, 103))
@@ -536,7 +512,7 @@ class MinesweeperGUI:
 
         self.card((28, 224, 688, 482))
         self.text("Bàn chơi", (51, 244), 22, INK, True)
-        self.text(f"{ROWS} × {COLS}  /  Bàn #{self.seed:04d}", (493, 250), 14, MUTED)
+        self.text(f"{ROWS} × {COLS}  /  Input T{self.seed+1:02d}", (493, 250), 14, MUTED)
         self.draw_board()
         self.text("Chuột trái: mở ô     ·     Chuột phải: cắm / gỡ cờ", (372, 665), 14, MUTED, center=True)
 
@@ -545,22 +521,24 @@ class MinesweeperGUI:
         state = "ĐANG CHUẨN BỊ" if self.pending else "ĐANG CHẠY" if self.playing else "ĐÃ XONG" if self.game.won else "ĐÃ THUA" if self.game.game_over else "TẠM DỪNG" if self.game.ai_path else "SẴN SÀNG"
         self.text(state, (758, 278), 11, TEAL, True)
         self.button("dfs", (758, 303, 169, 40), "DFS", lambda: self.choose_algorithm("DFS"), active=self.algorithm == "DFS")
-        self.button("astar", (939, 303, 171, 40), "HillClimbing", lambda: self.choose_algorithm("HillClimbing"), active=self.algorithm == "HillClimbing")
+        self.button("hill", (939, 303, 171, 40), "Hill Climbing", lambda: self.choose_algorithm("HillClimbing"), active=self.algorithm == "HillClimbing")
         enabled = not self.game.game_over and self.pending is None
         self.button("step", (758, 355, 110, 43), "Step  →", self.step, enabled=enabled)
-        self.button("play", (880, 355, 139, 43), "Pause" if self.playing else "Play", self.toggle_play, primary=True, enabled=enabled)
+        self.button("play", (880, 355, 139, 43), "Pause" if self.playing or (self.pending and self.pending_action == "play") else "Play", self.toggle_play, primary=True, enabled=not self.game.game_over)
         self.button("speed", (1031, 355, 79, 43), ("0.5×", "1×", "2.5×")[self.speed_index], self.cycle_speed)
         count, total = self.game.ai_index, len(self.game.ai_path)
         self.text("TIẾN ĐỘ KẾ HOẠCH", (758, 416), 11, MUTED, True)
-        self.text(f"{count} / {total} ô", (1034, 413), 14, INK, True)
+        self.text(f"{count} / {total} bước", (1034, 413), 14, INK, True)
         self.card((758, 440, 352, 7), "#E5ECEF", radius=3)
         if total and count:
             self.card((758, 440, max(7, int(352*count/total)), 7), TEAL, radius=3)
         self.text("Lập kế hoạch: " + (f"{self.plan_ms:.3f} ms" if self.plan_ms is not None else "—"), (758, 465), 13, MUTED)
         expanded = self.game.stats.get("expanded_nodes", None)
         generated = self.game.stats.get("generated_nodes", None)
-        self.text(f"Trạng thái đã duyệt: {expanded if expanded is not None else '—'}", (758, 487), 12, MUTED)
-        self.text(f"Trạng thái đã sinh: {generated if generated is not None else '—'}", (758, 502), 12, MUTED)
+        expanded_label = "Nhánh DFS hợp lệ" if self.algorithm == "DFS" else "Ứng viên mô phỏng"
+        generated_label = "Phép gán đã thử" if self.algorithm == "DFS" else "Ứng viên chấm điểm"
+        self.text(f"{expanded_label}: {expanded if expanded is not None else '—'}", (758, 487), 12, MUTED)
+        self.text(f"{generated_label}: {generated if generated is not None else '—'}", (758, 502), 12, MUTED)
 
         self.card((736, 537, 396, 169))
         self.text("Các bước gần nhất", (758, 555), 17, INK, True)
@@ -570,19 +548,19 @@ class MinesweeperGUI:
             index = len(self.history)-len(self.history[-3:])+i+1
             y = 589+i*33
             self.text(f"{index:02d}", (758, y), 14, TEAL, True)
-            self.text(f"{source}  ·  ô ({cell[0]+1}, {cell[1]+1})", (797, y), 14, INK)
-            label = "MÌN" if cell in self.game.mine_positions else f"{number} lân cận"
+            self.text(f"{source} ({cell[0]+1}, {cell[1]+1})", (797, y), 12, INK)
+            label = "CẮM CỜ" if number == -1 else "MÌN" if cell in self.game.mine_positions else f"{number} lân cận"
             self.text(label, (1030, y), 13, MUTED)
 
         self.button("prev", (28, 719, 43, 39), "‹", lambda: self.new_board(self.seed-1), enabled=self.seed > 0)
-        self.button("new", (79, 719, 158, 39), "Bàn mới  ›", self.new_board)
-        self.button("reset", (249, 719, 146, 39), "Reset bàn cũ", self.reset_board)
+        self.button("new", (79, 719, 158, 39), "Input tiếp  ›", self.new_board)
+        self.button("reset", (249, 719, 146, 39), "Reset input", self.reset_board)
         busy = self.benchmark_process is not None
         self.button("benchmark", (736, 719, 160, 39), "Đang đo…" if busy else "Chạy benchmark", self.start_benchmark, enabled=not busy)
         self.wrapped(self.benchmark_notice, pygame.Rect(908, 719, 220, 44), 11, MUTED, 17)
 
         self.wrapped(self.notice, pygame.Rect(30, 771, 690, 44), 13, TEAL, 18)
-        self.text("DEMO: AI suy luận từ các con số", (737, 775), 12, "#9A7140")
+        self.text("DỮ KIỆN: các số đã mở trên bàn", (737, 775), 12, "#9A7140")
         self.text("SPACE: Play/Pause   ·   →: Step   ·   R: Reset", (737, 796), 10, MUTED)
 
         if present:
@@ -635,7 +613,6 @@ class MinesweeperGUI:
         if self.benchmark_log:
             self.benchmark_log.close()
             self.benchmark_log = None
-        self.worker.shutdown(wait=False, cancel_futures=True)
         self.display.close()
         pygame.quit()
 

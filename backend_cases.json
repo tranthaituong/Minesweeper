@@ -1,0 +1,154 @@
+{
+  "dfs_missing_safe": [
+    {
+      "case_id": "T03",
+      "expected_safe": [
+        [
+          1,
+          3
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          4
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ]
+      ],
+      "returned_safe": [
+        [
+          1,
+          3
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          4
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          1
+        ],
+        [
+          4,
+          2
+        ],
+        [
+          4,
+          3
+        ]
+      ],
+      "missing_safe": []
+    },
+    {
+      "case_id": "T04",
+      "expected_safe": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "returned_safe": [
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          3
+        ]
+      ],
+      "missing_safe": []
+    }
+  ],
+  "hill_propagation": {
+    "returned_safe": [
+      [
+        0,
+        0
+      ]
+    ],
+    "changed": false,
+    "status": "ok",
+    "note": "Caller must keep returned sets before breaking on changed=False."
+  },
+  "hill_transition": {
+    "observation": {
+      "rows": 5,
+      "cols": 5,
+      "mines": 4,
+      "numbers": [
+        [
+          2,
+          2,
+          0
+        ],
+        [
+          4,
+          3,
+          3
+        ]
+      ],
+      "flags": []
+    },
+    "accepted": {
+      "current_score": 2.170434782608696,
+      "selected_score": 3.1704347826086954,
+      "selected_cell": [
+        1,
+        4
+      ]
+    },
+    "emitted_action": [
+      "guess",
+      [
+        1,
+        4
+      ]
+    ]
+  }
+}

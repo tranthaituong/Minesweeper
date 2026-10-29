@@ -1,0 +1,3 @@
+﻿algorithm,runs,median_planning_ms,median_python_peak_kib,correct_deduction_runs,runs_with_guess
+DFS,27,0.4594000001816312,40.796875,27,0
+HillClimbing,27,1.078100000086124,40.4765625,27,21

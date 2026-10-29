@@ -1,0 +1,14 @@
+{
+  "window_size": [
+    1160,
+    763
+  ],
+  "pixel_size": [
+    2320,
+    1526
+  ],
+  "history_count": 1,
+  "pending": false,
+  "algorithm": "HillClimbing",
+  "notice": "AI suy luận mở ô (3, 2) · 0 mìn xung quanh."
+}

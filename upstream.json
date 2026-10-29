@@ -1,0 +1,13 @@
+{
+  "url": "https://github.com/tranthaituong/Minesweeper",
+  "commit": "a2b8610d1daf53633ccb333459a8a87dc2b8db06",
+  "backend_files": [
+    "src/minesweeper_game.py",
+    "src/hill_climbing.py"
+  ],
+  "verified_on": "2026-10-23",
+  "backend_sha256": {
+    "src/minesweeper_game.py": "999981a5f7004dc29feeae578a4e1a07aab435f3a248ac1e08dd9c6325cd56ce",
+    "src/hill_climbing.py": "164e3a7f3619465634209ad6b27e399a7ffd593ed692f6a18988c710d0da9a17"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "generated_at_utc": "2026-10-29T16:36:31.265696+00:00",
+  "python": "3.11.2",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "upstream_commit": "a2b8610d1daf53633ccb333459a8a87dc2b8db06",
+  "repeats": 3,
+  "cases": [
+    "T01",
+    "T02",
+    "T03",
+    "T04",
+    "T05",
+    "T06",
+    "T07",
+    "T08",
+    "T09"
+  ],
+  "task": "one inference round on identical fixed public observations",
+  "memory": "tracemalloc peak Python allocations in a separate solver run, KiB",
+  "backend_sha256": {
+    "src/minesweeper_game.py": "219e880e746d2b270d345fb2a48c40e06d2438369f3b92d198aa7ab8187e3445",
+    "src/hill_climbing.py": "c6e0630619b32ade9a94f1c60d120d652d46d69ba9a96d6c0cfa302f7f40e310"
+  },
+  "inputs_sha256": "d930ebcecc096bfe611e9d3c91c5972f9b3948cc4c1253bc2bacf6fd6aa83e2b",
+  "node_units": {
+    "DFS": "consistent recursive assignments / generated binary assignments",
+    "HillClimbing": "simulated candidates / heuristic candidates"
+  }
+}

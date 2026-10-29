@@ -1,0 +1,15 @@
+Các file thuộc phần Người 2 để ghép vào repository:
+main.py
+rendering.py
+src/minesweeper_gui.py
+experiments.py
+benchmark.py
+prepare_inputs.py
+inputs.json
+tests/test_person2.py
+BAO_CAO_GIAO_DIEN.md
+benchmark_results/
+README.md
+
+Hai file src/minesweeper_game.py và src/hill_climbing.py trong gói là bản GitHub gốc.
+Khi ghép với bản thuật toán mới, dùng hai file backend mới nhất của Người 1.
